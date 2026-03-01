@@ -145,7 +145,7 @@ Open any folder/root view — use the **Default Order** dropdown in the top-righ
 
 ```
 Task_Tracker.py          # Single-file application
-task_tracker_v2_data.json  # Auto-generated data file
+task_tracker_data.json  # Auto-generated data file
 ```
 
 **Internal structure (data model):**
