@@ -606,7 +606,7 @@ class WelcomePage(QWidget):
         lay.setSpacing(14)
         for w in [
             lbl("🗂️", 52),
-            lbl("Task Tracker v2.0", 24, bold=True),
+            lbl("Task Tracker", 24, bold=True),
             lbl(
                 "Select a workspace from the sidebar,\nor right-click to create folders and trackers.",
                 13,
@@ -1340,7 +1340,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self._dm = DataManager()
         self._dm.load()
-        self.setWindowTitle("Task Tracker v2.0")
+        self.setWindowTitle("Task Tracker")
         self.setMinimumSize(1020, 660)
         self.resize(1160, 740)
 
