@@ -2,6 +2,7 @@
 """Task Tracker — Recursive workspace & task management."""
 
 import json
+import math
 import os
 import platform
 import sys
@@ -201,6 +202,7 @@ def new_tracker(name: str = "New Tracker") -> dict:
         "end": "",
         "total": 0,
         "done": 0,
+        "history": [],
     }
 
 
@@ -217,6 +219,106 @@ def new_folder(name: str = "New Folder") -> dict:
 
 def make_root() -> dict:
     return {"id": "root", "type": "folder", "name": "All Projects", "children": []}
+
+
+# ── History helpers ────────────────────────────────────────────────────────────
+_TODAY_FMT = "%Y-%m-%d"
+
+
+def _history_upsert(node: dict, done: int):
+    """Record / update today's cumulative done count. Only logs when done > 0."""
+    if done <= 0:
+        return
+    today = datetime.now().strftime(_TODAY_FMT)
+    hist = node.setdefault("history", [])
+    if hist and hist[-1]["date"] == today:
+        hist[-1]["done"] = done
+    else:
+        hist.append({"date": today, "done": done})
+
+
+def _migrate_history(node: dict):
+    """Bootstrap history for trackers that pre-date the history feature."""
+    if node["type"] == "tracker":
+        done = node.get("done", 0)
+        if done > 0 and not node.get("history"):
+            today = datetime.now().strftime(_TODAY_FMT)
+            node["history"] = [{"date": today, "done": done}]
+    for ch in node.get("children", []):
+        _migrate_history(ch)
+
+
+def _ema_velocity(history: list, today: datetime) -> Optional[float]:
+    """
+    Compute EMA velocity (tasks/day) from cumulative history snapshots.
+    Half-life = 7 days  =>  lambda = ln(2) / 7
+    Returns None if there is insufficient data.
+    """
+    if len(history) < 2:
+        return None
+    lam = math.log(2) / 7.0
+    weight_sum = 0.0
+    rate_sum = 0.0
+    for i in range(1, len(history)):
+        d0 = datetime.strptime(history[i - 1]["date"], _TODAY_FMT)
+        d1 = datetime.strptime(history[i]["date"], _TODAY_FMT)
+        delta_done = history[i]["done"] - history[i - 1]["done"]
+        delta_days = max((d1 - d0).days, 1)
+        rate = delta_done / delta_days  # tasks/day (can be negative)
+        age_days = max((today - d1).days, 0)
+        w = math.exp(-lam * age_days)
+        weight_sum += w
+        rate_sum += w * rate
+    if weight_sum < 1e-12:
+        return None
+    return rate_sum / weight_sum
+
+
+def _aggregate_folder_velocity(
+    node: dict, today: datetime
+) -> tuple:
+    """
+    Recursively compute aggregate (tasks_per_day_needed, ema_velocity, remaining)
+    across all descendant trackers of a folder.
+    Returns (tasks_day_needed: float|None, ema_velocity: float|None, remaining: int)
+    """
+    if node["type"] == "tracker":
+        end_dt = parse_dt(node.get("end", ""))
+        start_dt = parse_dt(node.get("start", ""))
+        total = node.get("total", 0)
+        done = node.get("done", 0)
+        remaining = max(0, total - done)
+        # Tasks/day needed
+        tpd = None
+        if end_dt and remaining > 0:
+            rem_days = max(0.0, (end_dt - today).total_seconds()) / 86400.0
+            if rem_days > 1e-6:
+                tpd = remaining / rem_days
+        # EMA velocity — fall back to simple rate if history is thin
+        vel = _ema_velocity(node.get("history", []), today)
+        if vel is None and done > 0 and start_dt and start_dt < today:
+            elapsed_d = (today - start_dt).total_seconds() / 86400.0
+            if elapsed_d > 1e-6:
+                vel = done / elapsed_d
+        return (tpd, vel, remaining)
+
+    total_tpd = 0.0
+    has_tpd = False
+    w_sum = 0.0
+    vel_sum = 0.0
+    total_remaining = 0
+    for ch in node.get("children", []):
+        ctpd, cvel, crem = _aggregate_folder_velocity(ch, today)
+        total_remaining += crem
+        if ctpd is not None:
+            total_tpd += ctpd
+            has_tpd = True
+        if cvel is not None:
+            w_sum += 1.0
+            vel_sum += cvel
+    agg_tpd = total_tpd if has_tpd else None
+    agg_vel = (vel_sum / w_sum) if w_sum > 0 else None
+    return (agg_tpd, agg_vel, total_remaining)
 
 
 # ── Aggregation & Status ───────────────────────────────────────────────────────
@@ -330,6 +432,7 @@ class DataManager:
                     self.root = data
             except Exception:
                 pass
+        _migrate_history(self.root)
         self._rebuild_map()
 
     def save(self):
@@ -397,7 +500,10 @@ class DataManager:
     def update_tracker(self, nid: str, **kwargs):
         n = self._map.get(nid)
         if n and n["type"] == "tracker":
+            # Update history before applying kwargs so we capture the new done value
+            new_done = kwargs.get("done", n.get("done", 0))
             n.update(kwargs)
+            _history_upsert(n, new_done)
             self.save()
 
     def rename(self, nid: str, new_name: str):
@@ -485,6 +591,7 @@ def make_pbar(value: int, status: str, height: int = 10) -> QProgressBar:
     pb.setValue(value)
     pb.setProperty("status", status)
     pb.setFixedHeight(height)
+    pb.setTextVisible(False)
     pb.style().unpolish(pb)
     pb.style().polish(pb)
     return pb
@@ -530,10 +637,13 @@ class StatusBadge(QLabel):
 # ── ChildCard ──────────────────────────────────────────────────────────────────
 class ChildCard(QFrame):
     clicked = Signal(str)
+    done_changed = Signal(str, int)  # (nid, new_done)
 
     def __init__(self, node: dict, parent=None):
         super().__init__(parent)
         self._nid = node["id"]
+        self._node = node
+        self._is_tracker = node["type"] == "tracker"
         self.setFixedHeight(108)
         self.setCursor(Qt.PointingHandCursor)
         self.setStyleSheet(
@@ -543,7 +653,7 @@ class ChildCard(QFrame):
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(14, 10, 14, 10)
-        lay.setSpacing(6)
+        lay.setSpacing(4)
 
         top = QHBoxLayout()
         icon = "📁" if node["type"] == "folder" else "📋"
@@ -565,10 +675,55 @@ class ChildCard(QFrame):
         pr.addWidget(pl)
         lay.addLayout(pr)
 
+        bottom = QHBoxLayout()
         info = f"{d}/{t} tasks"
         if node["type"] == "folder":
             info += f"  ·  {st['count']} tracker{'s' if st['count'] != 1 else ''}"
-        lay.addWidget(lbl(info, 11, color=MUTED))
+        bottom.addWidget(lbl(info, 11, color=MUTED))
+
+        # Inline ± counter only for tracker cards
+        if self._is_tracker:
+            bottom.addStretch()
+            self._dec = QPushButton("−")
+            self._dec.setFixedSize(24, 24)
+            self._dec.setStyleSheet(
+                f"QPushButton{{background:{SURFACE}; color:{TEXT}; border:1px solid {BORDER};"
+                f"border-radius:4px; font-size:14px; padding:0;}}"
+                f"QPushButton:hover{{background:{BORDER}; color:{ALIGHT};}}"
+            )
+            self._done_lbl_cc = QLabel(str(d))
+            self._done_lbl_cc.setStyleSheet(
+                f"color:{ALIGHT}; font-weight:bold; font-size:12px; background:transparent;"
+            )
+            self._done_lbl_cc.setAlignment(Qt.AlignCenter)
+            self._done_lbl_cc.setFixedWidth(28)
+            self._inc = QPushButton("+")
+            self._inc.setFixedSize(24, 24)
+            self._inc.setStyleSheet(
+                f"QPushButton{{background:{SURFACE}; color:{TEXT}; border:1px solid {BORDER};"
+                f"border-radius:4px; font-size:14px; padding:0;}}"
+                f"QPushButton:hover{{background:{BORDER}; color:{ALIGHT};}}"
+            )
+            self._dec.setEnabled(d > 0)
+            self._inc.setEnabled(t > d)
+            self._dec.clicked.connect(self._on_dec)
+            self._inc.clicked.connect(self._on_inc)
+            for w in (self._dec, self._done_lbl_cc, self._inc):
+                bottom.addWidget(w)
+
+        lay.addLayout(bottom)
+
+    def _on_dec(self):
+        node = self._node
+        d = node.get("done", 0)
+        if d > 0:
+            self.done_changed.emit(self._nid, d - 1)
+
+    def _on_inc(self):
+        node = self._node
+        d, t = node.get("done", 0), node.get("total", 0)
+        if d < t:
+            self.done_changed.emit(self._nid, d + 1)
 
     def mousePressEvent(self, ev):
         self.clicked.emit(self._nid)
@@ -790,28 +945,47 @@ class FolderPage(QWidget):
         pb_row.addWidget(pb)
         pb_row.addWidget(lbl(f"{pct:.1f}%", 13, bold=True, color=ALIGHT))
         lay.addLayout(pb_row)
+
+        # ── Aggregate velocity stats (always near the top, before children grid) ──
+        if st["count"] > 0:
+            now_dt = datetime.now()
+            agg_tpd, agg_vel, agg_rem = _aggregate_folder_velocity(node, now_dt)
+            tpd_str = f"{agg_tpd:.2f} tasks/day" if agg_tpd is not None else "—"
+            if agg_vel is not None and agg_vel > 1e-9 and agg_rem > 0:
+                eta_days = agg_rem / agg_vel
+                eta_dt = now_dt + timedelta(days=eta_days)
+                eta_str = eta_dt.strftime("%b %d, %Y")
+            else:
+                eta_str = "—"
+            vel_row = QHBoxLayout()
+            vel_row.setSpacing(10)
+            vel_row.addWidget(stat_card("TASKS / DAY NEEDED", tpd_str, WARN if agg_tpd else MUTED))
+            vel_row.addWidget(stat_card("EMA ETA", eta_str, ALIGHT if eta_str != "—" else MUTED))
+            vel_row.addStretch()
+            lay.addLayout(vel_row)
+
         lay.addWidget(hline())
 
         # ── Default Dates for folder ──────────────────────────────────────────
         if node["id"] != "root":
             lay.addWidget(
-                lbl("📅  Default Task Dates (Inherited by new trackers)", 12, bold=True, color=MUTED)
+                lbl("Default Task Dates (Inherited by new trackers)", 12, bold=True, color=MUTED)
             )
             dlay = QHBoxLayout()
             dlay.setSpacing(10)
 
             # Start
             self._start_edit = QLineEdit(node.get("start", ""))
-            self._start_edit.setPlaceholderText("Default Start")
-            self._start_edit.setReadOnly(True)
+            self._start_edit.setPlaceholderText("YYYY-MM-DD")
             self._start_edit.setFixedWidth(130)
+            self._start_edit.editingFinished.connect(self._on_defaults_changed)
             dlay.addWidget(self._date_row(self._start_edit, "Start"))
 
             # End
             self._end_edit = QLineEdit(node.get("end", ""))
-            self._end_edit.setPlaceholderText("Default End")
-            self._end_edit.setReadOnly(True)
+            self._end_edit.setPlaceholderText("YYYY-MM-DD")
             self._end_edit.setFixedWidth(130)
+            self._end_edit.editingFinished.connect(self._on_defaults_changed)
             dlay.addWidget(self._date_row(self._end_edit, "End"))
 
             dlay.addStretch()
@@ -830,6 +1004,7 @@ class FolderPage(QWidget):
             for i, child in enumerate(children):
                 card = ChildCard(child)
                 card.clicked.connect(self.navigate_to)
+                card.done_changed.connect(self._on_card_done_changed)
                 grid.addWidget(card, i // 2, i % 2)
             lay.addLayout(grid)
         else:
@@ -848,7 +1023,7 @@ class FolderPage(QWidget):
             lay.addWidget(hline())
             ah = QHBoxLayout()
             ah.addWidget(
-                lbl(f"⚠️  Needs Attention  ({len(attn)})", 14, bold=True, color=WARN)
+                lbl(f"Needs Attention  ({len(attn)})", 14, bold=True, color=WARN)
             )
             ah.addStretch()
             lay.addLayout(ah)
@@ -857,10 +1032,15 @@ class FolderPage(QWidget):
             for i, an in enumerate(attn):
                 card = ChildCard(an)
                 card.clicked.connect(self.navigate_to)
+                card.done_changed.connect(self._on_card_done_changed)
                 attn_grid.addWidget(card, i // 2, i % 2)
             lay.addLayout(attn_grid)
 
         lay.addStretch()
+
+    def _on_card_done_changed(self, nid: str, new_done: int):
+        self._dm.update_tracker(nid, done=new_done)
+        self._rebuild()
 
     def _set_sort(self, mode: str):
         global _SORT_MODE
@@ -875,12 +1055,12 @@ class FolderPage(QWidget):
         rl.setSpacing(6)
         rl.addWidget(lbl(f"{label}:", 11, color=MUTED))
         rl.addWidget(edit)
-        cb = btn("🗓️", fixed_w=34)
+        cb = btn("Date", fixed_w=64)
         cb.setFixedHeight(34)
         cb.setToolTip("Pick from calendar")
         cb.clicked.connect(lambda: self._pick_date(edit))
         rl.addWidget(cb)
-        clr = btn("✕", fixed_w=34)
+        clr = btn("Clear", fixed_w=68)
         clr.setFixedHeight(34)
         clr.setToolTip(f"Clear default {label.lower()}")
         clr.clicked.connect(lambda: self._clear_date(edit))
@@ -1128,7 +1308,7 @@ class TrackerPage(QWidget):
         rl.setContentsMargins(0, 0, 0, 0)
         rl.setSpacing(6)
         rl.addWidget(edit)
-        cb = btn("🗓️", fixed_w=34)
+        cb = btn("Date", fixed_w=64)
         cb.setFixedHeight(34)
         cb.setToolTip("Pick from calendar")
         cb.clicked.connect(lambda: self._pick_date(edit))
