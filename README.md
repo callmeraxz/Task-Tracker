@@ -11,6 +11,7 @@ A modern, dark-themed desktop task tracker with recursive folder/tracker hierarc
 - **Drag-and-drop** to move trackers between folders directly in the sidebar
 - **Reorder** items with ↑ / ↓ via right-click context menu
 - **Rename / Delete** any node via right-click
+- **Quick-Batch Creation** — automatically create up to 1000 numbered tasks when creating a new folder
 - **Default Task Dates** — set a timeline for a folder to be automatically inherited by any new trackers added to it
 
 ### 📋 Tracker Details
@@ -121,6 +122,7 @@ in the same directory as the script. The file is plain JSON — human-readable a
 ### Creating structure
 - **Right-click** any sidebar item → Add Tracker Here / Add Folder Here
 - Use the **📁+ / 📋+** buttons in the sidebar header to add at the root level
+- **Quick-Batch**: When creating a folder, you can optionally set a **Prefix** and **Count** (up to 1000). The folder will be pre-populated with tasks named `Prefix 1`, `Prefix 2`, etc.
 
 ### Editing a tracker
 1. Click any tracker in the sidebar or on a folder's Contents card
