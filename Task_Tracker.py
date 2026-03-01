@@ -602,6 +602,58 @@ class NameDialog(QDialog):
         return self._edit.text().strip()
 
 
+class NodeCreationDialog(QDialog):
+    def __init__(self, kind: str, parent=None):
+        super().__init__(parent)
+        self.kind = kind
+        label = "Folder" if kind == "folder" else "Tracker"
+        self.setWindowTitle(f"New {label}")
+        self.setFixedWidth(360)
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(20, 20, 20, 20)
+        lay.setSpacing(14)
+
+        lay.addWidget(lbl(f"New {label}", 14, bold=True))
+
+        self._name_edit = QLineEdit()
+        self._name_edit.setPlaceholderText(f"Enter {label.lower()} name")
+        lay.addWidget(self._name_edit)
+
+        self._batch_prefix = None
+        self._batch_count = None
+
+        if kind == "folder":
+            lay.addWidget(hline())
+            lay.addWidget(
+                lbl("Quick Batch Create (Optional)", 11, bold=True, color=MUTED)
+            )
+
+            flay = QFormLayout()
+            flay.setSpacing(10)
+            self._batch_prefix = QLineEdit()
+            self._batch_prefix.setPlaceholderText("Tracker prefix (e.g. Task)")
+            flay.addRow("Prefix:", self._batch_prefix)
+
+            self._batch_count = QSpinBox()
+            self._batch_count.setRange(0, 1000)
+            flay.addRow("Count:", self._batch_count)
+            lay.addLayout(flay)
+
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self.reject)
+        self._name_edit.returnPressed.connect(self.accept)
+        lay.addWidget(bb)
+
+    def get_data(self) -> dict:
+        return {
+            "name": self._name_edit.text().strip(),
+            "prefix": self._batch_prefix.text().strip() if self._batch_prefix else "",
+            "count": self._batch_count.value() if self._batch_count else 0,
+        }
+
+
 # ── CalendarDialog ────────────────────────────────────────────────────────────
 class CalendarDialog(QDialog):
     def __init__(self, current: str = "", parent=None):
@@ -1370,14 +1422,22 @@ class Sidebar(QWidget):
         menu.exec(self._tree.viewport().mapToGlobal(pos))
 
     def _add_node(self, kind: str, parent_id: str):
-        label = "Folder" if kind == "folder" else "Tracker"
-        dlg = NameDialog(f"New {label}", f"Enter {label.lower()} name", parent=self)
-        if dlg.exec() == QDialog.Accepted and dlg.get_name():
-            child = (
-                new_folder(dlg.get_name())
-                if kind == "folder"
-                else new_tracker(dlg.get_name())
-            )
+        dlg = NodeCreationDialog(kind, parent=self)
+        if dlg.exec() == QDialog.Accepted:
+            data = dlg.get_data()
+            if not data["name"]:
+                return
+
+            if kind == "folder":
+                child = new_folder(data["name"])
+                count = data["count"]
+                if count > 0:
+                    prefix = data["prefix"] or "Task"
+                    for i in range(1, count + 1):
+                        child["children"].append(new_tracker(f"{prefix} {i}"))
+            else:
+                child = new_tracker(data["name"])
+
             self._dm.add_child(parent_id, child)
             self.rebuild(child["id"])
             self.tree_changed.emit()
