@@ -24,7 +24,8 @@ A modern, dark-themed desktop task tracker with recursive folder/tracker hierarc
 ### 📊 Live Stats (per tracker)
 - **Time Remaining / Elapsed** — live time progress bar
 - **Tasks / Day Needed** — exact rate to hit the deadline
-- **Est. Completion** — velocity-based ETA (`tasks done ÷ elapsed days × remaining`)
+- **Est. Completion (ETA)** — EMA velocity (half-life 7 days) projected forward; falls back to simple `done ÷ elapsed days` when history is insufficient
+- **Activity History** — every change to the done count is recorded as a daily snapshot (one entry per calendar day), building a cumulative log used for velocity and ETA calculations
 
 ### 📁 Folder Aggregation
 Folders recursively aggregate all descendants:
@@ -35,7 +36,10 @@ Folders recursively aggregate all descendants:
 | **Trackers** | Count of all leaf trackers |
 | **Nearest Deadline** | `min(end_dt)` across all descendants |
 | **Status Badge** | Driven by nearest deadline + aggregate progress |
+| **Tasks / Day Needed** | Sum of per-tracker rates (remaining ÷ days to deadline) |
+| **EMA ETA** | Mean EMA velocity (λ = ln2/7) across all trackers → projected completion date |
 
+These aggregate velocity stats appear **at the top of every folder view**, before the contents grid, so they're always visible regardless of how many child items the folder contains.
 ### 🎯 Focus Board (per folder)
 Every folder page shows a **⚠️ Needs Attention** section at the bottom — a contextual board showing all overdue and at-risk trackers within that folder's scope. At "All Projects" root, this becomes a **global priority board**.
 
@@ -127,9 +131,10 @@ in the same directory as the script. The file is plain JSON — human-readable a
 ### Editing a tracker
 1. Click any tracker in the sidebar or on a folder's Contents card
 2. Edit the name directly in the header
-3. Set **Start** and **Target** dates — type `YYYY-MM-DD` or use the **🗓️** calendar button
+3. Set **Start** and **Target** dates — type `YYYY-MM-DD` or use the **Date** calendar button
 4. Set **Total Tasks**, then use **+** / **−** to increment completed count
-5. Everything saves automatically
+5. You can also use the inline **−** / **+** counter on tracker cards directly from any folder view — no need to navigate in
+6. Everything saves automatically; every change to the done count is logged to the daily history
 
 ### Moving trackers
 - **Drag** a tracker from the sidebar and **drop it onto a folder** to move it inside
@@ -144,7 +149,7 @@ Open any folder/root view — use the **Default Order** dropdown in the top-righ
 
 ### Folder Default Dates
 1. Open any folder page (except the root "All Projects").
-2. Set **Start** and **End** dates under the **📅 Default Task Dates** section.
+2. Set **Start** and **End** dates under the **Default Task Dates** section — type directly or use the **Date** button.
 3. Any **new** trackers created in this folder will now pre-fill with these dates.
 4. **Retroactive Update**: If you change these defaults, the app will ask if you'd like to update all existing direct child trackers to the new dates. (Child folders are always excluded from this).
 
@@ -161,12 +166,14 @@ task_tracker_data.json  # Auto-generated data file
 ```
 root (folder)
  ├─ Folder A        { id, name, start, end, children }
- │   ├─ Tracker 1   { id, name, start, end, total, done, notes }
+ │   ├─ Tracker 1   { id, name, start, end, total, done, notes, history }
  │   └─ Tracker 2
  └─ Folder B
      └─ Sub-Folder
          └─ Tracker 3
 ```
+
+`history` is a list of `{ date: "YYYY-MM-DD", done: N }` daily snapshots. One entry per calendar day (upserted on change). Used to compute EMA velocity and projected ETA.
 
 **Key classes:**
 | Class | Role |
