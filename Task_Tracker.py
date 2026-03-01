@@ -205,7 +205,14 @@ def new_tracker(name: str = "New Tracker") -> dict:
 
 
 def new_folder(name: str = "New Folder") -> dict:
-    return {"id": uid(), "type": "folder", "name": name, "children": []}
+    return {
+        "id": uid(),
+        "type": "folder",
+        "name": name,
+        "start": "",
+        "end": "",
+        "children": [],
+    }
 
 
 def make_root() -> dict:
@@ -353,8 +360,31 @@ class DataManager:
     def add_child(self, parent_id: str, child: dict):
         p = self._map.get(parent_id)
         if p and p["type"] == "folder":
+            # Inherit defaults for new trackers if fields are empty
+            if child["type"] == "tracker":
+                s_def = p.get("start", "")
+                e_def = p.get("end", "")
+                if s_def and not child.get("start"):
+                    child["start"] = s_def
+                if e_def and not child.get("end"):
+                    child["end"] = e_def
+
             p.setdefault("children", []).append(child)
             self._rebuild_map()
+            self.save()
+
+    def update_folder_defaults(
+        self, nid: str, start: str, end: str, retro: bool = False
+    ):
+        n = self._map.get(nid)
+        if n and n["type"] == "folder":
+            n["start"] = start
+            n["end"] = end
+            if retro:
+                for ch in n.get("children", []):
+                    if ch["type"] == "tracker":
+                        ch["start"] = start
+                        ch["end"] = end
             self.save()
 
     def remove(self, nid: str):
@@ -710,6 +740,32 @@ class FolderPage(QWidget):
         lay.addLayout(pb_row)
         lay.addWidget(hline())
 
+        # ── Default Dates for folder ──────────────────────────────────────────
+        if node["id"] != "root":
+            lay.addWidget(
+                lbl("📅  Default Task Dates (Inherited by new trackers)", 12, bold=True, color=MUTED)
+            )
+            dlay = QHBoxLayout()
+            dlay.setSpacing(10)
+
+            # Start
+            self._start_edit = QLineEdit(node.get("start", ""))
+            self._start_edit.setPlaceholderText("Default Start")
+            self._start_edit.setReadOnly(True)
+            self._start_edit.setFixedWidth(130)
+            dlay.addWidget(self._date_row(self._start_edit, "Start"))
+
+            # End
+            self._end_edit = QLineEdit(node.get("end", ""))
+            self._end_edit.setPlaceholderText("Default End")
+            self._end_edit.setReadOnly(True)
+            self._end_edit.setFixedWidth(130)
+            dlay.addWidget(self._date_row(self._end_edit, "End"))
+
+            dlay.addStretch()
+            lay.addLayout(dlay)
+            lay.addWidget(hline())
+
         # Children grid
         children = sorted_children(node.get("children", []))
         if children:
@@ -758,6 +814,58 @@ class FolderPage(QWidget):
         global _SORT_MODE
         _SORT_MODE = mode
         self._rebuild()
+
+    def _date_row(self, edit: QLineEdit, label: str) -> QWidget:
+        rw = QWidget()
+        rw.setStyleSheet("background:transparent;")
+        rl = QHBoxLayout(rw)
+        rl.setContentsMargins(0, 0, 0, 0)
+        rl.setSpacing(6)
+        rl.addWidget(lbl(f"{label}:", 11, color=MUTED))
+        rl.addWidget(edit)
+        cb = btn("🗓️", fixed_w=34)
+        cb.setFixedHeight(34)
+        cb.setToolTip("Pick from calendar")
+        cb.clicked.connect(lambda: self._pick_date(edit))
+        rl.addWidget(cb)
+        clr = btn("✕", fixed_w=34)
+        clr.setFixedHeight(34)
+        clr.setToolTip(f"Clear default {label.lower()}")
+        clr.clicked.connect(lambda: self._clear_date(edit))
+        rl.addWidget(clr)
+        return rw
+
+    def _pick_date(self, target: QLineEdit):
+        dlg = CalendarDialog(target.text(), parent=self)
+        if dlg.exec() == QDialog.Accepted:
+            target.setText(dlg.get_date())
+            self._on_defaults_changed()
+
+    def _clear_date(self, target: QLineEdit):
+        target.setText("")
+        self._on_defaults_changed()
+
+    def _on_defaults_changed(self):
+        node = self._dm.get(self._nid)
+        if not node:
+            return
+        s, e = self._start_edit.text(), self._end_edit.text()
+        if s == node.get("start", "") and e == node.get("end", ""):
+            return
+
+        apply_retro = False
+        trackers = [c for c in node.get("children", []) if c["type"] == "tracker"]
+        if trackers:
+            res = QMessageBox.question(
+                self,
+                "Update Existing Tasks?",
+                "Do you want to apply these new default dates to all existing trackers in this folder?",
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            apply_retro = res == QMessageBox.Yes
+
+        self._dm.update_folder_defaults(self._nid, s, e, apply_retro)
+        self.refresh()
 
 
 # ── TrackerPage ────────────────────────────────────────────────────────────────
