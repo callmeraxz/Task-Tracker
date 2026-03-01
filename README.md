@@ -11,6 +11,7 @@ A modern, dark-themed desktop task tracker with recursive folder/tracker hierarc
 - **Drag-and-drop** to move trackers between folders directly in the sidebar
 - **Reorder** items with ↑ / ↓ via right-click context menu
 - **Rename / Delete** any node via right-click
+- **Default Task Dates** — set a timeline for a folder to be automatically inherited by any new trackers added to it
 
 ### 📋 Tracker Details
 - **Inline name editing** — click to edit, auto-saves on focus-out
@@ -139,6 +140,12 @@ Type in the **🔍 Search** bar at the top of the sidebar to filter trackers by 
 ### Sort
 Open any folder/root view — use the **Default Order** dropdown in the top-right of the content area to switch sort mode globally.
 
+### Folder Default Dates
+1. Open any folder page (except the root "All Projects").
+2. Set **Start** and **End** dates under the **📅 Default Task Dates** section.
+3. Any **new** trackers created in this folder will now pre-fill with these dates.
+4. **Retroactive Update**: If you change these defaults, the app will ask if you'd like to update all existing direct child trackers to the new dates. (Child folders are always excluded from this).
+
 ---
 
 ## 📐 Architecture
@@ -151,7 +158,7 @@ task_tracker_data.json  # Auto-generated data file
 **Internal structure (data model):**
 ```
 root (folder)
- ├─ Folder A
+ ├─ Folder A        { id, name, start, end, children }
  │   ├─ Tracker 1   { id, name, start, end, total, done, notes }
  │   └─ Tracker 2
  └─ Folder B
